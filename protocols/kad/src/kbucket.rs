@@ -83,6 +83,8 @@ struct PendingNode<TPeerId, TVal> {
 struct Node<TPeerId, TVal> {
     /// Id of the node.
     id: TPeerId,
+    /// Hash
+    hash: Multihash,
     /// Value associated to it.
     value: TVal,
 }
@@ -98,6 +100,9 @@ pub trait KBucketsPeerId<TOther = Self>: PartialEq<TOther> {
     /// Returns then number of bits that are necessary to store the distance between peer IDs.
     /// Used for pre-allocations.
     fn max_distance() -> NonZeroUsize;
+
+    /// Rehash
+    fn hash(&self) -> Multihash;
 }
 
 impl KBucketsPeerId for PeerId {
@@ -108,6 +113,10 @@ impl KBucketsPeerId for PeerId {
     fn max_distance() -> NonZeroUsize {
         <Multihash as KBucketsPeerId>::max_distance()
     }
+
+    fn hash(&self) -> Multihash {
+        multihash::encode(multihash::Hash::SHA2256, self.as_ref()).expect("sha2-256 is always supported")
+    }
 }
 
 impl KBucketsPeerId<PeerId> for Multihash {
@@ -117,6 +126,10 @@ impl KBucketsPeerId<PeerId> for Multihash {
 
     fn max_distance() -> NonZeroUsize {
         <PeerId as KBucketsPeerId>::max_distance()
+    }
+
+    fn hash(&self) -> Multihash {
+        <Multihash as KBucketsPeerId>::hash(self)
     }
 }
 
@@ -132,6 +145,10 @@ impl KBucketsPeerId for Multihash {
 
     fn max_distance() -> NonZeroUsize {
         NonZeroUsize::new(512).expect("512 is not zero; QED")
+    }
+
+    fn hash(&self) -> Multihash {
+        multihash::encode(multihash::Hash::SHA2256, self.digest()).expect("sha2-256 is always supported")
     }
 }
 
@@ -149,6 +166,16 @@ where
             .saturating_add(<B as KBucketsPeerId<B>>::max_distance().get());
         NonZeroUsize::new(n).expect("Saturating-add of two non-zeros can't be zero; QED")
     }
+
+    fn hash(&self) -> Multihash {
+        //Not really sure about this
+        let a_digest = self.0.hash().digest();
+        let b_digest = self.1.hash().digest();
+
+        let ab_digests: Vec<u8> = a_digest.iter().cloned().chain(b_digest.iter().cloned()).collect();
+
+        multihash::encode(multihash::Hash::SHA2256, ab_digests.as_slice()).expect("sha2-256 is always supported")
+    }
 }
 
 impl<'a, T> KBucketsPeerId for &'a T
@@ -161,6 +188,10 @@ where
 
     fn max_distance() -> NonZeroUsize {
         <T as KBucketsPeerId>::max_distance()
+    }
+
+    fn hash(&self) -> Multihash {
+        self.hash()
     }
 }
 
@@ -280,12 +311,12 @@ where
     /// Finds the nodes closest to `id`, ordered by distance.
     ///
     /// Pending nodes are ignored.
-    pub fn find_closest(&mut self, id: &impl KBucketsPeerId<TPeerId>) -> VecIntoIter<TPeerId> {
+    pub fn find_closest(&mut self, id: &impl KBucketsPeerId<TPeerId>) -> Iterator<Item=TPeerId> {
         // TODO: optimize
         let mut out = Vec::new();
         for table in self.tables.iter_mut() {
             for node in table.nodes.iter() {
-                out.push(node.id.clone());
+                out.push(node);
             }
 
             // TODO: this code that handles the pending_node should normally be shared with
@@ -296,12 +327,12 @@ where
             if let Some(ref pending) = table.pending_node {
                 if pending.replace <= Instant::now() && pending.connected {
                     out.pop();
-                    out.push(pending.node.id.clone());
+                    out.push(&pending.node);
                 }
             }
         }
-        out.sort_by(|a, b| id.distance_with(a).cmp(&id.distance_with(b)));
-        out.into_iter()
+        out.sort_by(|a, b| id.hash().distance_with(&a.hash).cmp(&id.hash().distance_with(&b.hash)));
+        out.into_iter().map(|n| n.id.clone())
     }
 }
 

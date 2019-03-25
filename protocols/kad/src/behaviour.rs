@@ -139,6 +139,10 @@ impl KBucketsPeerId<PeerId> for QueryInfo {
     fn max_distance() -> NonZeroUsize {
         <PeerId as KBucketsPeerId>::max_distance()
     }
+
+    fn hash(&self) -> Multihash {
+        multihash::encode(multihash::Hash::SHA2256, self.as_ref().digest()).expect("sha2-256 is always supported")
+    }
 }
 
 impl AsRef<Multihash> for QueryInfo {
